@@ -41,7 +41,7 @@ export const synchronizeVault = async (
         if (!localFile || isRemoteNewer(remoteItem, localFile)) {
           if (progressCallback) progressCallback(`Downloading: ${remoteName}`);
           try {
-            const content = await onedrive.readFile(`/ObsidianVault/${remoteName}`);
+            const content = await onedrive.readFile(remoteName);
             const remoteFile: VaultFile = {
               id: remoteItem.id,
               name: remoteName,

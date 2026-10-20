@@ -1,40 +1,48 @@
 import { msalInstance } from "./auth";
 
-// Microsoft Graph API endpoints
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
+const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All"];
 
-// Token acquisition helper
 export const getAccessToken = async (): Promise<string> => {
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length === 0) {
+  const account = msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+  if (!account) {
     throw new Error("No Microsoft account logged in");
   }
-  msalInstance.setActiveAccount(accounts[0]);
-  
-  const tokenResponse = await msalInstance.acquireTokenSilent({
-    scopes: ["User.Read", "Files.ReadWrite.All"],
-    account: accounts[0],
+
+  msalInstance.setActiveAccount(account);
+  const response = await msalInstance.acquireTokenSilent({
+    scopes: GRAPH_SCOPES,
+    account,
   });
-  
-  return tokenResponse.accessToken;
+  return response.accessToken;
 };
 
-// Onedrive API service
-export class OnedriveService {
-  private token: string = "";
-  private vaultPath: string = "/ObsidianVault"; // Personal vault root folder
+const encodePath = (path: string): string =>
+  path
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 
-  // Set the vault folder path (e.g., /ObsidianVault/ or /Goodnotes/)
+export interface OneDriveItem {
+  id: string;
+  name: string;
+  folder?: { childCount: number };
+  file?: { size: number; lastModifiedDateTime: string };
+}
+
+export class OnedriveService {
+  private token = "";
+  private vaultPath = "ObsidianVault";
+
   setVaultPath(path: string): void {
-    this.vaultPath = path.endsWith("/") ? path : `${path}/`;
+    this.vaultPath = path.replace(/^\/+|\/+$/g, "");
   }
 
-  // Get the current vault path
   getVaultPath(): string {
     return this.vaultPath;
   }
 
-  // Get access token
   private async getToken(): Promise<string> {
     if (!this.token) {
       this.token = await getAccessToken();
@@ -42,146 +50,80 @@ export class OnedriveService {
     return this.token;
   }
 
-  // List files in vault folder
-  async listFiles(): Promise<OneDriveItem[]> {
+  private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const token = await this.getToken();
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}:/children`;
-    
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to list files: ${response.statusText}`);
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`${GRAPH_ENDPOINT}${path}`, { ...init, headers });
+
+    if (response.status === 401) {
+      this.token = "";
     }
-    
-    const data = await response.json();
-    return data.value || [];
+    return response;
   }
 
-  // Read a file content from OneDrive
-  async readFile(filePath: string): Promise<string> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(filePath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}${encodedPath}:/content`;
-    
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-      },
-    });
-    
+  private itemPath(filePath = ""): string {
+    const fullPath = [this.vaultPath, filePath].filter(Boolean).join("/");
+    return `/drive/root:/${encodePath(fullPath)}`;
+  }
+
+  async listFiles(): Promise<OneDriveItem[]> {
+    const response = await this.request(`${this.itemPath()}:/children`);
     if (!response.ok) {
-      throw new Error(`Failed to read file: ${response.statusText}`);
+      throw new Error(`Failed to list files: ${response.status} ${response.statusText}`);
     }
-    
+    const data = (await response.json()) as { value?: OneDriveItem[] };
+    return data.value ?? [];
+  }
+
+  async readFile(filePath: string): Promise<string> {
+    const response = await this.request(`${this.itemPath(filePath)}:/content`);
+    if (!response.ok) {
+      throw new Error(`Failed to read file: ${response.status} ${response.statusText}`);
+    }
     return response.text();
   }
 
-  // Write/ save a file to OneDrive
   async writeFile(filePath: string, content: string): Promise<void> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(filePath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}${encodedPath}`;
-    
-    const response = await fetch(url, {
+    const response = await this.request(`${this.itemPath(filePath)}:/content`, {
       method: "PUT",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name: filePath.split("/").pop(), content }),
+      headers: { "Content-Type": "text/markdown; charset=utf-8" },
+      body: content,
     });
-    
     if (!response.ok) {
-      throw new Error(`Failed to write file: ${response.statusText}`);
+      throw new Error(`Failed to write file: ${response.status} ${response.statusText}`);
     }
   }
 
-  // Delete a file from OneDrive
   async deleteFile(filePath: string): Promise<void> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(filePath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}${encodedPath}`;
-    
-    const response = await fetch(url, {
-      method: "DELETE",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-      },
-    });
-    
+    const response = await this.request(this.itemPath(filePath), { method: "DELETE" });
     if (!response.ok) {
-      throw new Error(`Failed to delete file: ${response.statusText}`);
+      throw new Error(`Failed to delete file: ${response.status} ${response.statusText}`);
     }
   }
 
-  // Stream fetch for Goodnotes PDF binaries
   async streamPDF(pdfPath: string): Promise<Blob> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(pdfPath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}Goodnotes/${encodedPath}/content`;
-    
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-      },
-      // Stream the response as a blob for PDF rendering
-    });
-    
+    const response = await this.request(`${this.itemPath(pdfPath)}:/content`);
     if (!response.ok) {
-      throw new Error(`Failed to stream PDF: ${response.statusText}`);
+      throw new Error(`Failed to stream PDF: ${response.status} ${response.statusText}`);
     }
-    
     return response.blob();
   }
 
-  // Check if a file exists
   async fileExists(filePath: string): Promise<boolean> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(filePath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}${encodedPath}`;
-    
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-      },
-    });
-    
-    return response.status === 200;
-  }
-
-  // Get file metadata
-  async getFileMetadata(filePath: string): Promise<OneDriveItem> {
-    const token = await this.getToken();
-    const encodedPath = encodeURIComponent(filePath);
-    const url = `${GRAPH_ENDPOINT}/drive/root:/${this.vaultPath}${encodedPath}`;
-    
-    const response = await fetch(url, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-      },
-    });
-    
+    const response = await this.request(this.itemPath(filePath));
+    if (response.status === 404) return false;
     if (!response.ok) {
-      throw new Error(`Failed to get file metadata: ${response.statusText}`);
+      throw new Error(`Failed to check file: ${response.status} ${response.statusText}`);
     }
-    
-    return response.json();
+    return true;
   }
-}
 
-interface OneDriveItem {
-  id: string;
-  name: string;
-  folder?: {
-    childCount: number;
-  };
-  file?: {
-    size: number;
-    lastModifiedDateTime: string;
-  };
+  async getFileMetadata(filePath: string): Promise<OneDriveItem> {
+    const response = await this.request(this.itemPath(filePath));
+    if (!response.ok) {
+      throw new Error(`Failed to get file metadata: ${response.status} ${response.statusText}`);
+    }
+    return response.json() as Promise<OneDriveItem>;
+  }
 }

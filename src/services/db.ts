@@ -150,6 +150,7 @@ export const syncEngine = {
 
     if (progressCallback) progressCallback(`Syncing ${queue.length} items...`);
 
+    const failedItems: typeof queue = [];
     for (const item of queue) {
       try {
         const file = files.find((f) => f.name === item.filename);
@@ -157,20 +158,21 @@ export const syncEngine = {
         if (item.action === "save" && file) {
           await onedrive.writeFile(file.path, item.content || file.content);
           if (progressCallback) progressCallback(`Synced: ${item.filename}`);
-        } else if (item.action === "delete" && file) {
-          await onedrive.deleteFile(file.path);
+        } else if (item.action === "delete") {
+          await onedrive.deleteFile(file?.path || item.filename);
           if (progressCallback) progressCallback(`Deleted: ${item.filename}`);
         }
       } catch (err) {
         console.error(`Sync error for ${item.filename}:`, err);
-        // Mark as conflict - re-queue
-        await db.queueSync("save", item.filename, item.content);
+        failedItems.push(item);
         if (progressCallback) progressCallback(`Error syncing: ${item.filename}`);
       }
     }
 
-    // Clear queue after sync
     await db.clearSyncQueue();
+    for (const item of failedItems) {
+      await db.queueSync(item.action, item.filename, item.content);
+    }
     if (progressCallback) progressCallback("Sync complete");
   },
 
