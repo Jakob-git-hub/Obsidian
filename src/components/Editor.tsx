@@ -41,7 +41,7 @@ export const Editor: React.FC<EditorProps> = ({
     const extensions: Extension[] = [
       basicSetup,
       markdown(),
-      searchKeymap,
+      keymap.of(searchKeymap),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     ];
 
@@ -81,7 +81,7 @@ export const Editor: React.FC<EditorProps> = ({
 
     // Handle [[Target]] format - avoid duplicates
     while ((match = WIKILINK_REGEX.exec(content)) !== null) {
-      const alreadyFound = links.find((l) => l.target === match[1]);
+      const alreadyFound = links.find((l) => l.target === match![1]);
       if (!alreadyFound) {
         links.push({
           text: match[1],
@@ -109,8 +109,8 @@ export const Editor: React.FC<EditorProps> = ({
         const decs: Range<Decoration>[] = [];
         let match: RegExpMatchArray | null;
         while ((match = regex.exec(content)) !== null) {
-          const start = match.index;
-          const end = match.index + match[0].length;
+          const start = match!.index;
+          const end = match!.index + match![0].length;
           decs.push(Decoration.mark({ class: "wikilink" }).range(start, end));
         }
         return decs;
