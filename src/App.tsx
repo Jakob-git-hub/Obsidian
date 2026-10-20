@@ -5,7 +5,10 @@ import { db, VaultFile } from "./services/db";
 import { Editor } from "./components/Editor";
 import { PDFViewer } from "./components/PDFViewer";
 import { Graph } from "./components/Graph";
-import { Folder, FileText, RefreshCw, LogIn, LogOut, Network, FileCode, Plus, Trash2, Search } from "lucide-react";
+import { Folder, FileText, RefreshCw, LogIn, LogOut, Network, FileCode, Plus, Trash2, Search, HardDrive, Cloud } from "lucide-react";
+
+type StorageMode = "local" | "onedrive";
+const STORAGE_MODE_KEY = "obsidian-storage-mode";
 
 export function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -17,18 +20,34 @@ export function App() {
   const [activeTab, setActiveTab] = useState<"editor" | "graph">("editor");
   const [syncStatus, setSyncStatus] = useState<string>("Idle");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [storageMode, setStorageMode] = useState<StorageMode>(() => {
+    return localStorage.getItem(STORAGE_MODE_KEY) === "onedrive" ? "onedrive" : "local";
+  });
 
   useEffect(() => {
-    msalInstance.initialize().then(() => {
+    void loadLocalFiles();
+    if (storageMode !== "onedrive") return;
+
+    void msalInstance.initialize().then(() => {
       const accounts = msalInstance.getAllAccounts();
       if (accounts.length > 0) {
         msalInstance.setActiveAccount(accounts[0]);
         setIsAuthenticated(true);
         setUser(accounts[0].username);
-        loadLocalFiles();
+        void handleSync(true);
       }
     });
-  }, []);
+  }, [storageMode]);
+
+  const chooseStorageMode = (mode: StorageMode) => {
+    localStorage.setItem(STORAGE_MODE_KEY, mode);
+    setStorageMode(mode);
+    setSyncStatus(mode === "local" ? "Local storage" : "Ready to sync");
+    if (mode === "local") {
+      setIsAuthenticated(false);
+      setUser(null);
+    }
+  };
 
   const handleLogin = async () => {
     try {
@@ -36,7 +55,7 @@ export function App() {
       msalInstance.setActiveAccount(loginResponse.account);
       setIsAuthenticated(true);
       setUser(loginResponse.account.username);
-      handleSync();
+      await handleSync(true);
     } catch (err) {
       console.error("Login failed:", err);
     }
@@ -57,7 +76,8 @@ export function App() {
     }
   };
 
-  const handleSync = async () => {
+  const handleSync = async (allowUnauthenticated = false) => {
+    if (storageMode !== "onedrive" || (!isAuthenticated && !allowUnauthenticated)) return;
     setSyncStatus("Syncing...");
     const updated = await synchronizeVault((msg: string) => setSyncStatus(msg));
     setFiles(updated);
@@ -77,7 +97,9 @@ export function App() {
       syncStatus: "modified",
     };
     await db.saveFile(updatedFile);
-    await db.queueSync("save", updatedFile.name, newContent);
+    if (storageMode === "onedrive") {
+      await db.queueSync("save", updatedFile.name, newContent);
+    }
     setFiles(files.map((f) => (f.id === updatedFile.id ? updatedFile : f)));
   };
 
@@ -94,7 +116,9 @@ export function App() {
       syncStatus: "local-only",
     };
     await db.saveFile(newFile);
-    await db.queueSync("save", filename, newFile.content);
+    if (storageMode === "onedrive") {
+      await db.queueSync("save", filename, newFile.content);
+    }
     setFiles([...files, newFile]);
     setActiveFileId(newFile.id);
   };
@@ -102,7 +126,9 @@ export function App() {
   const handleDeleteNote = async (id: string, name: string) => {
     if (!confirm(`Delete ${name}?`)) return;
     await db.deleteFile(id);
-    await db.queueSync("delete", name);
+    if (storageMode === "onedrive") {
+      await db.queueSync("delete", name);
+    }
     const remaining = files.filter((f) => f.id !== id);
     setFiles(remaining);
     if (activeFileId === id) {
@@ -155,7 +181,7 @@ export function App() {
     });
   });
 
-  if (!isAuthenticated) {
+  if (storageMode === "onedrive" && !isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-[#1e1e1e] text-white">
         <div className="p-8 bg-gray-800 rounded-2xl shadow-2xl flex flex-col items-center max-w-md w-full border border-gray-700">
@@ -164,12 +190,13 @@ export function App() {
           <p className="text-gray-400 text-center mb-6 text-sm">
             Local-first PKM with OneDrive sync and Goodnotes PDF integration tailored for iPadOS Safari.
           </p>
-          <button
-            onClick={handleLogin}
-            className="w-full py-3 bg-blue-600 hover:bg-blue-500 font-semibold rounded-lg flex items-center justify-center space-x-2 shadow-lg transition"
-          >
+          <button onClick={handleLogin} className="w-full py-3 bg-blue-600 hover:bg-blue-500 font-semibold rounded-lg flex items-center justify-center space-x-2 shadow-lg transition">
             <LogIn size={20} />
             <span>Sign in with Microsoft OneDrive</span>
+          </button>
+          <button onClick={() => chooseStorageMode("local")} className="w-full mt-3 py-3 bg-gray-700 hover:bg-gray-600 font-semibold rounded-lg flex items-center justify-center space-x-2 transition">
+            <HardDrive size={20} />
+            <span>Use local storage instead</span>
           </button>
         </div>
       </div>
@@ -195,13 +222,21 @@ export function App() {
             <button onClick={handleCreateNewNote} title="New Note" className="p-1.5 hover:bg-gray-800 rounded">
               <Plus size={18} />
             </button>
-            <button onClick={handleSync} title="Sync Now" className="p-1.5 hover:bg-gray-800 rounded">
+            <button onClick={() => void handleSync()} disabled={storageMode === "local"} title="Sync Now" className="p-1.5 hover:bg-gray-800 rounded disabled:opacity-30 disabled:cursor-not-allowed">
               <RefreshCw size={18} className={syncStatus.includes("Syncing") ? "animate-spin text-blue-400" : ""} />
             </button>
           </div>
         </div>
 
         <div className="p-3 border-b border-gray-800">
+          <div className="mb-3 flex gap-1 rounded-lg bg-gray-800 p-1 text-xs">
+            <button onClick={() => chooseStorageMode("local")} className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 ${storageMode === "local" ? "bg-gray-600 text-white" : "text-gray-400"}`}>
+              <HardDrive size={14} /> Local
+            </button>
+            <button onClick={() => chooseStorageMode("onedrive")} className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1.5 ${storageMode === "onedrive" ? "bg-blue-600 text-white" : "text-gray-400"}`}>
+              <Cloud size={14} /> OneDrive
+            </button>
+          </div>
           <div className="relative">
             <Search size={16} className="absolute left-3 top-2.5 text-gray-500" />
             <input
