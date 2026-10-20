@@ -93,7 +93,7 @@ class Database {
   async getSyncedFiles(): Promise<VaultFile[]> {
     const db = await this.dbPromise;
     const all = await db.getAll("files");
-    return all.filter((f) => f.syncStatus !== "local-only");
+    return all.filter((f: VaultFile) => f.syncStatus !== "local-only");
   }
 
   // Add sync queue item
@@ -144,11 +144,11 @@ export const syncEngine = {
     const files = await db.getAllFiles();
 
     if (queue.length === 0) {
-      progressCallback("No pending syncs");
+      if (progressCallback) progressCallback("No pending syncs");
       return;
     }
 
-    progressCallback(`Syncing ${queue.length} items...`);
+    if (progressCallback) progressCallback(`Syncing ${queue.length} items...`);
 
     for (const item of queue) {
       try {
@@ -156,28 +156,28 @@ export const syncEngine = {
 
         if (item.action === "save" && file) {
           await onedrive.writeFile(file.path, item.content || file.content);
-          progressCallback(`Synced: ${item.filename}`);
+          if (progressCallback) progressCallback(`Synced: ${item.filename}`);
         } else if (item.action === "delete" && file) {
           await onedrive.deleteFile(file.path);
-          progressCallback(`Deleted: ${item.filename}`);
+          if (progressCallback) progressCallback(`Deleted: ${item.filename}`);
         }
       } catch (err) {
         console.error(`Sync error for ${item.filename}:`, err);
         // Mark as conflict - re-queue
         await db.queueSync("save", item.filename, item.content);
-        progressCallback(`Error syncing: ${item.filename}`);
+        if (progressCallback) progressCallback(`Error syncing: ${item.filename}`);
       }
     }
 
     // Clear queue after sync
     await db.clearSyncQueue();
-    progressCallback("Sync complete");
+    if (progressCallback) progressCallback("Sync complete");
   },
 
   // Initialize offline support - set up network change listener
   initializeOfflineSupport(onedrive: OnedriveService, progressCallback?: (msg: string) => void): void {
     const handleOnline = async () => {
-      progressCallback("Network restored, syncing...");
+      if (progressCallback) progressCallback("Network restored, syncing...");
       await syncEngine.syncToOneDrive(onedrive, progressCallback);
     };
 
