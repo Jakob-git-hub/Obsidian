@@ -5,10 +5,41 @@ import { db, VaultFile } from "./services/db";
 import { Editor } from "./components/Editor";
 import { PDFViewer } from "./components/PDFViewer";
 import { Graph } from "./components/Graph";
-import { Folder, FileText, RefreshCw, LogIn, LogOut, Network, FileCode, Plus, Trash2, Search, HardDrive, Cloud } from "lucide-react";
+import {
+  Folder,
+  FileText,
+  RefreshCw,
+  LogIn,
+  LogOut,
+  Network,
+  Plus,
+  Trash2,
+  Search,
+  HardDrive,
+  Cloud,
+  FolderOpen,
+  ArrowUpRight,
+  LockKeyhole,
+} from "lucide-react";
 
 type StorageMode = "local" | "onedrive";
 const STORAGE_MODE_KEY = "obsidian-storage-mode";
+type LocalFileEntry = {
+  kind: "file";
+  name: string;
+  getFile: () => Promise<File>;
+};
+type LocalDirectoryEntry = {
+  kind: "directory";
+  name: string;
+  values: () => AsyncIterableIterator<LocalFileEntry | LocalDirectoryEntry>;
+};
+type LocalDirectoryHandle = LocalDirectoryEntry;
+
+const getDirectoryPicker = () =>
+  (window as Window & {
+    showDirectoryPicker?: () => Promise<LocalDirectoryHandle>;
+  }).showDirectoryPicker;
 
 export function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -20,6 +51,8 @@ export function App() {
   const [activeTab, setActiveTab] = useState<"editor" | "graph">("editor");
   const [syncStatus, setSyncStatus] = useState<string>("Idle");
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(true);
+  const [localVaultName, setLocalVaultName] = useState<string | null>(null);
   const [storageMode, setStorageMode] = useState<StorageMode>(() => {
     return localStorage.getItem(STORAGE_MODE_KEY) === "onedrive" ? "onedrive" : "local";
   });
@@ -69,10 +102,64 @@ export function App() {
   };
 
   const loadLocalFiles = async () => {
-    const all = await db.getAllFiles();
-    setFiles(all);
-    if (all.length > 0 && !activeFileId) {
-      setActiveFileId(all[0].id);
+    try {
+      const all = await db.getAllFiles();
+      setFiles(all);
+      if (all.length > 0 && !activeFileId) {
+        setActiveFileId(all[0].id);
+      }
+    } finally {
+      setIsLoadingFiles(false);
+    }
+  };
+
+  const handleOpenLocalVault = async () => {
+    const showDirectoryPicker = getDirectoryPicker();
+    if (!showDirectoryPicker) {
+      alert("Folder access is not available in this browser. Try Safari or Chrome on a secure connection.");
+      return;
+    }
+
+    try {
+      const directory = await showDirectoryPicker();
+      const importedFiles: VaultFile[] = [];
+
+      const readDirectory = async (
+        currentDirectory: LocalDirectoryHandle,
+        parentPath = "",
+      ): Promise<void> => {
+        for await (const entry of currentDirectory.values()) {
+          const entryPath = `${parentPath}/${entry.name}`;
+          if (entry.kind === "directory") {
+            await readDirectory(entry, entryPath);
+          } else if (entry.name.toLowerCase().endsWith(".md")) {
+            const file = await entry.getFile();
+            importedFiles.push({
+              id: `local-${entryPath}`,
+              name: entry.name,
+              path: entryPath,
+              content: await file.text(),
+              updatedAt: file.lastModified || Date.now(),
+              syncStatus: "local-only",
+            });
+          }
+        }
+      };
+
+      await readDirectory(directory);
+      for (const file of importedFiles) {
+        await db.saveFile(file);
+      }
+      setFiles(importedFiles);
+      setActiveFileId(importedFiles[0]?.id || null);
+      setLocalVaultName(directory.name);
+      setStorageMode("local");
+      localStorage.setItem(STORAGE_MODE_KEY, "local");
+      setSyncStatus("Local vault");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.error("Could not open local vault:", error);
+      alert("The vault could not be opened. Check that the folder is readable and try again.");
     }
   };
 
@@ -181,25 +268,70 @@ export function App() {
     });
   });
 
+  if (!isLoadingFiles && storageMode === "local" && files.length === 0) {
+    return (
+      <main className="start-screen">
+        <div className="start-layout">
+          <header className="start-header">
+            <div className="brand-mark" aria-hidden="true">O</div>
+            <span>Obsidian</span>
+          </header>
+          <section className="start-content" aria-labelledby="start-title">
+            <p className="eyebrow">A quiet place for your notes</p>
+            <h1 id="start-title">Open a vault<br />to begin.</h1>
+            <p className="start-description">
+              Choose a folder on this device. Your Markdown notes stay local and remain available offline.
+            </p>
+            <button type="button" className="primary-action" onClick={() => void handleOpenLocalVault()}>
+              <FolderOpen size={19} />
+              <span>Choose local vault</span>
+              <ArrowUpRight size={17} />
+            </button>
+            <p className="support-note">
+              <LockKeyhole size={14} />
+              <span>Nothing is uploaded without your permission.</span>
+            </p>
+          </section>
+          <footer className="start-footer">
+            <span>Already using a synced vault?</span>
+            <button type="button" className="text-action" onClick={() => chooseStorageMode("onedrive")}>
+              Continue with OneDrive <ArrowUpRight size={15} />
+            </button>
+          </footer>
+        </div>
+      </main>
+    );
+  }
+
   if (storageMode === "onedrive" && !isAuthenticated) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-[#1e1e1e] text-white">
-        <div className="p-8 bg-gray-800 rounded-2xl shadow-2xl flex flex-col items-center max-w-md w-full border border-gray-700">
-          <FileCode size={64} className="text-blue-500 mb-4 animate-bounce" />
-          <h1 className="text-2xl font-bold mb-2">Obsidian iPad PWA</h1>
-          <p className="text-gray-400 text-center mb-6 text-sm">
-            Local-first PKM with OneDrive sync and Goodnotes PDF integration tailored for iPadOS Safari.
-          </p>
-          <button onClick={handleLogin} className="w-full py-3 bg-blue-600 hover:bg-blue-500 font-semibold rounded-lg flex items-center justify-center space-x-2 shadow-lg transition">
-            <LogIn size={20} />
-            <span>Sign in with Microsoft OneDrive</span>
-          </button>
-          <button onClick={() => chooseStorageMode("local")} className="w-full mt-3 py-3 bg-gray-700 hover:bg-gray-600 font-semibold rounded-lg flex items-center justify-center space-x-2 transition">
-            <HardDrive size={20} />
-            <span>Use local storage instead</span>
-          </button>
+      <main className="start-screen">
+        <div className="start-layout">
+          <header className="start-header">
+            <div className="brand-mark" aria-hidden="true">O</div>
+            <span>Obsidian</span>
+          </header>
+          <section className="start-content" aria-labelledby="sync-title">
+            <p className="eyebrow">OneDrive vault</p>
+            <h1 id="sync-title">Bring your notes<br />with you.</h1>
+            <p className="start-description">
+              Sign in to sync the existing Obsidian vault stored in your OneDrive.
+            </p>
+            <button type="button" className="primary-action" onClick={() => void handleLogin()}>
+              <LogIn size={19} />
+              <span>Sign in with Microsoft</span>
+              <ArrowUpRight size={17} />
+            </button>
+            <button type="button" className="secondary-action" onClick={() => chooseStorageMode("local")}>
+              <HardDrive size={17} />
+              Use a local vault instead
+            </button>
+          </section>
+          <footer className="start-footer">
+            <span>Private by default. Sync when you choose.</span>
+          </footer>
         </div>
-      </div>
+      </main>
     );
   }
 

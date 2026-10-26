@@ -4,8 +4,8 @@
   "description": "Local-first PKM with OneDrive sync and Goodnotes PDF integration tailored for iPadOS Safari",
   "start_url": ".",
   "display": "standalone",
-  "theme_color": "#1e1e1e",
-  "background_color": "#1e1e1e",
+  "theme_color": "#121416",
+  "background_color": "#121416",
   "orientation": "portrait-primary",
   "precomputed_icon": false,
   "icons": [
