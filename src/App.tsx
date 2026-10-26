@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { msalInstance, loginRequest } from "./services/auth";
 import { synchronizeVault } from "./services/sync";
 import { db, VaultFile } from "./services/db";
@@ -35,11 +35,124 @@ type LocalDirectoryEntry = {
   values: () => AsyncIterableIterator<LocalFileEntry | LocalDirectoryEntry>;
 };
 type LocalDirectoryHandle = LocalDirectoryEntry;
+type StartPageProps = {
+  mode: StorageMode;
+  onChooseFolder: () => void;
+  onUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onContinueWithOneDrive: () => void;
+  onUseLocal: () => void;
+};
 
 const getDirectoryPicker = () =>
   (window as Window & {
     showDirectoryPicker?: () => Promise<LocalDirectoryHandle>;
   }).showDirectoryPicker;
+
+function StartPage({
+  mode,
+  onChooseFolder,
+  onUpload,
+  onContinueWithOneDrive,
+  onUseLocal,
+}: StartPageProps) {
+  const [activeStep, setActiveStep] = useState(0);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const steps =
+    mode === "local"
+      ? [
+          ["01", "Your files stay yours.", "Open a folder directly, or upload a copy. Nothing leaves this browser by accident."],
+          ["02", "A vault, not a dashboard.", "Markdown files become a focused writing space. No setup ceremony. No clutter."],
+          ["03", "Ready when you are.", "Work offline, keep your notes close, and add sync only when it serves you."],
+        ]
+      : [
+          ["01", "Your vault, wherever it is.", "Connect OneDrive to bring an existing vault into this workspace."],
+          ["02", "The local copy is yours.", "Notes remain available in the browser so reading and writing do not depend on a network."],
+          ["03", "Choose your pace.", "Sync is available when you need it, never forced into the first step."],
+        ];
+
+  useEffect(() => {
+    uploadRef.current?.setAttribute("webkitdirectory", "");
+    uploadRef.current?.setAttribute("directory", "");
+  }, []);
+
+  const handleStoryScroll = (event: React.UIEvent<HTMLElement>) => {
+    const scrollTop = event.currentTarget.scrollTop;
+    const height = event.currentTarget.clientHeight;
+    setActiveStep(Math.min(steps.length - 1, Math.floor((scrollTop + height * 0.45) / height)));
+  };
+
+  return (
+    <main className="start-screen">
+      <header className="start-header">
+        <div className="brand-mark" aria-hidden="true">O</div>
+        <span>Obsidian</span>
+      </header>
+      <div className="start-story" onScroll={handleStoryScroll}>
+        <div className="start-layout">
+          <section className="start-content" aria-labelledby="start-title">
+            <p className="eyebrow">{mode === "local" ? "A quiet place for your notes" : "OneDrive vault"}</p>
+            <h1 id="start-title">{mode === "local" ? <>Open a vault<br />to begin.</> : <>Bring your notes<br />with you.</>}</h1>
+            <p className="start-description">
+              {mode === "local"
+                ? "Choose a folder or upload a vault from this device. Your Markdown notes stay local and remain available offline."
+                : "Sign in to sync the existing Obsidian vault stored in your OneDrive."}
+            </p>
+            {mode === "local" ? (
+              <>
+                <button type="button" className="primary-action" onClick={onChooseFolder}>
+                  <FolderOpen size={19} />
+                  <span>Choose local vault</span>
+                  <ArrowUpRight size={17} />
+                </button>
+                <button type="button" className="secondary-action" onClick={() => uploadRef.current?.click()}>
+                  <Cloud size={17} />
+                  Upload a vault
+                </button>
+                <input ref={uploadRef} className="visually-hidden" type="file" multiple accept=".md,text/markdown" onChange={onUpload} />
+              </>
+            ) : (
+              <>
+                <button type="button" className="primary-action" onClick={onContinueWithOneDrive}>
+                  <LogIn size={19} />
+                  <span>Sign in with Microsoft</span>
+                  <ArrowUpRight size={17} />
+                </button>
+                <button type="button" className="secondary-action" onClick={onUseLocal}>
+                  <HardDrive size={17} />
+                  Use a local vault instead
+                </button>
+              </>
+            )}
+            <p className="support-note">
+              <LockKeyhole size={14} />
+              <span>{mode === "local" ? "Nothing is uploaded without your permission." : "Private by default. Sync when you choose."}</span>
+            </p>
+          </section>
+          <aside className="story-panel" aria-live="polite">
+            <span className="story-index">{steps[activeStep][0]} / 03</span>
+            <div className="story-rule" />
+            <h2>{steps[activeStep][1]}</h2>
+            <p>{steps[activeStep][2]}</p>
+            <div className="story-dots">
+              {steps.map((step, index) => (
+                <span key={step[0]} className={index === activeStep ? "is-active" : ""} />
+              ))}
+            </div>
+          </aside>
+          <footer className="start-footer">
+            <span>{mode === "local" ? "Already using a synced vault?" : "Prefer to start on this device?"}</span>
+            <button type="button" className="text-action" onClick={mode === "local" ? onContinueWithOneDrive : onUseLocal}>
+              {mode === "local" ? "Continue with OneDrive" : "Use a local vault"} <ArrowUpRight size={15} />
+            </button>
+          </footer>
+        </div>
+        <div className="story-spacer" aria-hidden="true">
+          {steps.map((step) => <span key={step[0]} />)}
+        </div>
+      </div>
+    </main>
+  );
+}
 
 export function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -147,20 +260,56 @@ export function App() {
       };
 
       await readDirectory(directory);
-      for (const file of importedFiles) {
-        await db.saveFile(file);
-      }
-      setFiles(importedFiles);
-      setActiveFileId(importedFiles[0]?.id || null);
-      setLocalVaultName(directory.name);
-      setStorageMode("local");
-      localStorage.setItem(STORAGE_MODE_KEY, "local");
-      setSyncStatus("Local vault");
+      await finishLocalImport(importedFiles, directory.name);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.error("Could not open local vault:", error);
       alert("The vault could not be opened. Check that the folder is readable and try again.");
     }
+  };
+
+  const finishLocalImport = async (importedFiles: VaultFile[], vaultName: string) => {
+    for (const file of importedFiles) {
+      await db.saveFile(file);
+    }
+    setFiles(importedFiles);
+    setActiveFileId(importedFiles[0]?.id || null);
+    setLocalVaultName(vaultName);
+    setStorageMode("local");
+    localStorage.setItem(STORAGE_MODE_KEY, "local");
+    setSyncStatus("Local vault");
+  };
+
+  const handleUploadVault = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = "";
+    const markdownFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith(".md"));
+    if (markdownFiles.length === 0) {
+      alert("No Markdown files were found in that upload.");
+      return;
+    }
+
+    const importedFiles = markdownFiles.map((file) => {
+      const relativePath = file.webkitRelativePath || file.name;
+      return {
+        id: `upload-${relativePath}`,
+        name: file.name,
+        path: `/${relativePath}`,
+        content: "",
+        updatedAt: file.lastModified || Date.now(),
+        syncStatus: "local-only" as const,
+        source: file,
+      };
+    });
+
+    const resolvedFiles: VaultFile[] = [];
+    for (const file of importedFiles) {
+      resolvedFiles.push({ ...file, content: await file.source.text() });
+    }
+    await finishLocalImport(
+      resolvedFiles,
+      selectedFiles[0]?.webkitRelativePath?.split("/")[0] || "Uploaded vault",
+    );
   };
 
   const handleSync = async (allowUnauthenticated = false) => {
@@ -270,68 +419,25 @@ export function App() {
 
   if (!isLoadingFiles && storageMode === "local" && files.length === 0) {
     return (
-      <main className="start-screen">
-        <div className="start-layout">
-          <header className="start-header">
-            <div className="brand-mark" aria-hidden="true">O</div>
-            <span>Obsidian</span>
-          </header>
-          <section className="start-content" aria-labelledby="start-title">
-            <p className="eyebrow">A quiet place for your notes</p>
-            <h1 id="start-title">Open a vault<br />to begin.</h1>
-            <p className="start-description">
-              Choose a folder on this device. Your Markdown notes stay local and remain available offline.
-            </p>
-            <button type="button" className="primary-action" onClick={() => void handleOpenLocalVault()}>
-              <FolderOpen size={19} />
-              <span>Choose local vault</span>
-              <ArrowUpRight size={17} />
-            </button>
-            <p className="support-note">
-              <LockKeyhole size={14} />
-              <span>Nothing is uploaded without your permission.</span>
-            </p>
-          </section>
-          <footer className="start-footer">
-            <span>Already using a synced vault?</span>
-            <button type="button" className="text-action" onClick={() => chooseStorageMode("onedrive")}>
-              Continue with OneDrive <ArrowUpRight size={15} />
-            </button>
-          </footer>
-        </div>
-      </main>
+      <StartPage
+        mode="local"
+        onChooseFolder={() => void handleOpenLocalVault()}
+        onUpload={(event) => void handleUploadVault(event)}
+        onContinueWithOneDrive={() => chooseStorageMode("onedrive")}
+        onUseLocal={() => chooseStorageMode("local")}
+      />
     );
   }
 
   if (storageMode === "onedrive" && !isAuthenticated) {
     return (
-      <main className="start-screen">
-        <div className="start-layout">
-          <header className="start-header">
-            <div className="brand-mark" aria-hidden="true">O</div>
-            <span>Obsidian</span>
-          </header>
-          <section className="start-content" aria-labelledby="sync-title">
-            <p className="eyebrow">OneDrive vault</p>
-            <h1 id="sync-title">Bring your notes<br />with you.</h1>
-            <p className="start-description">
-              Sign in to sync the existing Obsidian vault stored in your OneDrive.
-            </p>
-            <button type="button" className="primary-action" onClick={() => void handleLogin()}>
-              <LogIn size={19} />
-              <span>Sign in with Microsoft</span>
-              <ArrowUpRight size={17} />
-            </button>
-            <button type="button" className="secondary-action" onClick={() => chooseStorageMode("local")}>
-              <HardDrive size={17} />
-              Use a local vault instead
-            </button>
-          </section>
-          <footer className="start-footer">
-            <span>Private by default. Sync when you choose.</span>
-          </footer>
-        </div>
-      </main>
+      <StartPage
+        mode="onedrive"
+        onChooseFolder={() => chooseStorageMode("local")}
+        onUpload={(event) => void handleUploadVault(event)}
+        onContinueWithOneDrive={() => void handleLogin()}
+        onUseLocal={() => chooseStorageMode("local")}
+      />
     );
   }
 
